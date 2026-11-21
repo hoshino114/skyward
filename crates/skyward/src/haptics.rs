@@ -228,7 +228,7 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
         custom_data: data,
     };
     let length = match click {
-        Click::Sine { length_ms, .. } => u16::from(*length_ms),
+        Click::Sine { length_ms, .. } => *length_ms,
         _ => 0,
     };
     let mut effect = libc::ff_effect {

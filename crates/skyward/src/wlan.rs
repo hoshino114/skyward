@@ -567,10 +567,10 @@ impl Station {
                 // The network gave an address, so the password it was joined
                 // with is the one that works: it is written down to be joined
                 // again without asking.
-                if let Some(s) = kept {
-                    if let Err(e) = remember(&s) {
-                        let _ = skyward_sys::kmsg(&format!("the network joined is not kept: {e:#}"));
-                    }
+                if let Some(s) = kept
+                    && let Err(e) = remember(&s)
+                {
+                    let _ = skyward_sys::kmsg(&format!("the network joined is not kept: {e:#}"));
                 }
                 lease
             }
