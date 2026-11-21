@@ -273,7 +273,7 @@ pub struct Device {
     pub os_version_prop: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Display {
     #[serde(default)]
     pub width: u32,
@@ -288,6 +288,18 @@ pub struct Display {
     /// sliding over another rounds its leading corners to it.
     #[serde(default)]
     pub corner_radius: u32,
+    /// Whether a panel left resting long enough is turned off, and the
+    /// phone let sleep with it. A phone whose panel does not come back on
+    /// from off keeps it resting instead: it lights at once, and the phone
+    /// stays awake enough to see the key that lights it.
+    #[serde(default = "default_true")]
+    pub power_off: bool,
+}
+
+impl Default for Display {
+    fn default() -> Self {
+        Display { width: 0, height: 0, density: 0, diagonal: None, corner_radius: 0, power_off: true }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -317,6 +329,11 @@ pub struct Touch {
     /// step of starting the controller.
     #[serde(default)]
     pub writes: Vec<Write>,
+    /// Whether a finger on the dark panel lights it. The pages leave it
+    /// dark, as the phone's own system does where the power key lights it,
+    /// unless the phone says a tap wakes it.
+    #[serde(default)]
+    pub wake: bool,
 }
 
 /// Partitions as the phone itself mounts them.
@@ -712,6 +729,14 @@ mod tests {
         assert_eq!(cfg.backup.efs, ["modemst1", "modemst2", "fsg", "fsc", "persist"]);
         assert!(cfg.backup.data_skipped.contains(&"vendor/goodix".to_string()));
         assert!(cfg.wipe.logs.contains(&"/data/vendor/bsplog".to_string()));
+    }
+
+    #[test]
+    fn a_panel_is_turned_off_unless_the_phone_says_otherwise() {
+        let plain = DeviceConfig::parse("[device]\ncodename = \"x\"\n").unwrap();
+        assert!(plain.display.power_off, "a phone whose panel comes back on from off keeps it off");
+        let resting = DeviceConfig::parse("[device]\ncodename = \"x\"\n[display]\npower_off = false\n").unwrap();
+        assert!(!resting.display.power_off, "a panel that does not come back on from off only rests");
     }
 
     #[test]

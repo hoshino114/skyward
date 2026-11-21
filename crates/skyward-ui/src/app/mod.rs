@@ -1064,6 +1064,9 @@ pub struct App {
     /// The keys are working the pages: the control they are on is lit. A
     /// touch puts the light out, and a volume key brings it back.
     keys: bool,
+    /// Whether a finger on the dark panel lights it, as the phone's own
+    /// system does where a tap wakes it.
+    pub touch_wakes: bool,
     /// The button held down, and what holding it does.
     button: Option<(Key, Press)>,
     /// The first of the power key and volume down gone down, waiting for
@@ -1205,6 +1208,7 @@ impl App {
             // The touchscreen may run from the partitions fastboot leaves
             // out, so its page starts worked with the keys.
             keys: start == Screen::Fastboot,
+            touch_wakes: false,
             button: None,
             chord: None,
             seek: None,

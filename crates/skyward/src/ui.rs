@@ -1275,6 +1275,7 @@ impl<'a> Pages<'a> {
         };
         let mut app = App::new(first, w, h, cfg.display.density as f32 / 160.0);
         app.set_screen_corners(cfg.display.corner_radius as f32);
+        app.touch_wakes = cfg.touch.wake;
         // The settings kept from the starts before are back before the first
         // frame, and before file transfer starts with its switch and the time
         // zone. The pages speak the language chosen then, or else the one the
@@ -1728,7 +1729,7 @@ impl<'a> Pages<'a> {
             // controller following it stops drawing power.
             self.surface.rest()?;
             self.rested_at = Some(Instant::now());
-        } else if self.rested_at.is_some_and(|at| at.elapsed() >= REST) {
+        } else if self.cfg.display.power_off && self.rested_at.is_some_and(|at| at.elapsed() >= REST) {
             // Rested long enough, the display goes off: the panel and the
             // display processor feeding it stop drawing power.
             self.surface.turn_off()?;

@@ -312,6 +312,23 @@ mod tests {
     }
 
     #[test]
+    fn a_touch_on_the_dark_panel_lights_it_where_the_phone_says_a_tap_wakes_it() {
+        let (f, i) = (fonts(), info());
+        let mut app = App::new(Screen::Home, W, H, PPD);
+        app.touch_wakes = true;
+        let (x, y) = spot(&mut app, &f, &i, Action::Open(Screen::Settings));
+        press(&mut app, Key::Power, 0);
+        assert!(!app.display_on());
+        assert!(app.touch(Touch::Down(x, y), &f, 100).is_empty(), "the finger that wakes it presses nothing");
+        assert!(app.display_on(), "the panel is lit");
+        assert!(app.touch(Touch::Up, &f, 140).is_empty());
+        assert_eq!(app.screen(), Screen::Home, "and nothing was pressed");
+        // The next tap, after the guard, works the page.
+        tap_at(&mut app, &f, &i, Action::Open(Screen::Settings), 700);
+        assert_eq!(app.screen(), Screen::Settings);
+    }
+
+    #[test]
     fn a_cable_coming_out_lights_the_dark_panel_and_keeps_a_lit_one_lit() {
         let mut app = App::new(Screen::Home, W, H, PPD);
         app.tick(0);

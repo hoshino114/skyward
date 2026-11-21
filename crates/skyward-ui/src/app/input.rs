@@ -6,8 +6,14 @@ use super::*;
 impl App {
     pub fn touch(&mut self, ev: Touch, f: &Fonts, now: u64) -> Vec<Effect> {
         // A finger on the dark panel lights nothing, as on the phone's own
-        // system, where the power key lights it.
+        // system, where the power key lights it; on a phone told to wake on
+        // a tap, the finger that lands lights it, and only keeps it awake
+        // until it lifts.
         if !self.display_on {
+            if self.touch_wakes && matches!(ev, Touch::Down(..)) {
+                self.wake(now);
+                self.drag = Drag::Waking;
+            }
             return Vec::new();
         }
         // A finger on the charging screen sends it away for the page, and
