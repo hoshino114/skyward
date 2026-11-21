@@ -1,0 +1,147 @@
+[device]
+codename = "peridot"
+brand = "Xiaomi"
+model = "Redmi Turbo 3"
+ab = true
+soc = { hans = "第三代骁龙®8s移动平台", hant = "第三代驍龍®8s 移動平台", en = "Snapdragon® 8s Gen 3 Mobile Platform" }
+os_version_prop = "ro.mi.os.version.incremental"
+
+[display]
+width = 1220
+height = 2712
+density = 480
+diagonal = 6.67
+# The radius the stock settings round a page's corners to as it slides in.
+corner_radius = 108
+# A panel left resting long enough is not turned off here: on this phone the
+# panel did not come back on from off, and the phone could not be woken from
+# the sleep that follows. Resting instead, it lights at once with the next
+# frame, and the phone stays awake to see the power key that asks for one.
+power_off = false
+
+# A tap on the dark panel lights it again, as the stock system wakes on a
+# tap. The power key lights it too, either way.
+[touch]
+wake = true
+
+[modules]
+sources = ["vendor_boot", "vendor_dlkm", "vendor", "system_dlkm"]
+# The touchscreen: Xiaomi's touch layer, which the panels' own drivers are
+# built against, and both panels the phone comes with in two builds, goodix
+# on the csot one and focaltech on the tianma one. A driver for hardware that
+# is not there finds nothing to bind to and is no harm.
+# goodix_core depends on xiaomi_touch and panel_event_notifier, which the
+# source's modules.dep loads first.
+load = ["xiaomi_touch", "goodix_core", "focaltech_touch"]
+
+# The firmware of the WLAN chip, and the apps the secure world loads for the
+# secure element's service, are on the modem partition, which the phone
+# mounts at /vendor/firmware_mnt and its own recovery leaves unmounted.
+[firmware]
+partition = "modem"
+
+# The persist partition, which the phone mounts at /mnt/vendor/persist and
+# its own recovery leaves unmounted. The secure world keeps its own files
+# there, through a listener qseecomd registers: among them what the key
+# service needs to use a key that cannot be rolled back, such as the one
+# guarding each user's secret. The WLAN's MAC address and the camera's
+# calibration are there as well.
+[partitions]
+mounted = ["persist"]
+
+# What the phone's own init runs once the system has finished starting, as
+# the user and in the groups its init script on the phone gives it. The
+# kernel starts both CPU clusters on the performance governor, which holds
+# them at their highest clock, and Qualcomm's idle driver keeps idle CPUs
+# from powering down until it is told otherwise. Without it the CPUs stay at
+# their highest clock and voltage even while idle, and the phone slowly heats
+# up. It needs none of the programs that use the phone's keys, which the
+# recovery reads from the phone's own partitions, and runs before them, so
+# one of them that does not come up still leaves the CPUs settled.
+[[service]]
+path = "/vendor/bin/sh"
+args = ["/vendor/bin/init.kernel.post_boot.sh"]
+libraries = ["/system/lib64", "/vendor/lib64"]
+oneshot = true
+user = "root"
+groups = ["root", "system", "wakelock", "graphics"]
+
+# WLAN: Qualcomm's WCN6750, integrated on the platform and driven by
+# qca_cld3_qca6750 over icnss2, which itself loads the firmware service, the
+# preallocated memory and the IPC helpers first. The vendor's cfg80211 asks
+# for rfkill, one of the kernel's own modules in system_dlkm, which the
+# system loads before any of the vendor's and a recovery leaves out. Once
+# the chip is told to boot, icnss2 loads its firmware from the modem
+# partition and wlan0 appears. wpa_supplicant runs on the recovery's own
+# libraries before the vendor partition's: the vendor partition carries its
+# own copies of the lowest of them, and a program loading those would not be
+# understood by the recovery's service directory.
+#
+# The driver reads two files the firmware loader looks for and a recovery
+# has neither: its configuration, which the vendor partition keeps under
+# etc/wifi rather than in a firmware folder, and the MAC address the phone
+# keeps in persist. Both are put where the loader looks before the driver
+# starts.
+#
+# The phone's own init delays the chip's enable and hands it the boot that
+# cold boot calibration asks for. It writes them where the icnss2 driver
+# makes them, which is after the driver is loaded, as here.
+[wlan]
+modules = ["rfkill", "qca_cld3_qca6750"]
+writes = [
+    { path = "/sys/kernel/icnss/wlan_en_delay", value = "1000" },
+    { path = "/sys/kernel/icnss/wpss_boot", value = "1" },
+]
+firmware = [
+    { name = "wlan/qca_cld/qca6750/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/qca6750/WCNSS_qcom_cfg.ini" },
+    { name = "wlan/qca_cld/qca6750/wlan_mac.bin", path = "/mnt/vendor/persist/wlan/wlan_mac.bin" },
+]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+libraries = ["/system/lib64", "/vendor/lib64"]
+service = "android.hardware.wifi.supplicant.ISupplicant/default"
+probe = "http://connect.rom.miui.com/generate_204"
+
+# The update server the stock updater of the Chinese system asks.
+[update]
+server = "https://update.miui.com/updates/miotaV3.php"
+
+# The stock build the recovery is made on: the Chinese system's OS3.0.305.0,
+# whose full update package on the phone maker's own download server holds
+# the recovery partition the recovery is built on top of.
+[stock]
+version = "OS3.0.305.0.WNPCNXM"
+package = "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS3.0.305.0.WNPCNXM/peridot-ota_full-OS3.0.305.0.WNPCNXM-user-16.0-f5c2a07bdf.zip"
+recovery = "1db6c01f3eb9e516e3d3c323ea1c4dddae4f440bbef53877d1af1883fdf71028"
+
+# The partitions a backup of the baseband and EFS takes: the baseband's
+# settings, with the IMEI, and the sensors' calibration. And what of the
+# data partition a backup leaves out because the secure world keeps it in
+# step with itself: its own storage, its apps' data, the secure element's
+# state and the fingerprint templates.
+[backup]
+efs = ["modemst1", "modemst2", "fsg", "fsc", "persist"]
+data_skipped = [
+    "vendor/tzstorage",
+    "vendor/qtee",
+    "vendor/goodix",
+    "vendor/fingerprint",
+    "vendor/fpdata",
+    "vendor/misc/mi_fp",
+]
+
+# Where the phone's own programs keep logs in the data partition: the
+# system's, the minidumps, what Xiaomi's log manager keeps of each part of
+# the phone, and what the modem, Wi-Fi and Bluetooth leave when they crash.
+[wipe]
+logs = [
+    "/data/miuilog",
+    "/data/vendor/diag",
+    "/data/vendor/bsplog",
+    "/data/vendor/log",
+    "/data/vendor/ramdump",
+    "/data/vendor/ramdump_ssr",
+    "/data/vendor/ssrdump",
+    "/data/vendor/tombstones",
+    "/data/vendor/wlan_logs",
+]
