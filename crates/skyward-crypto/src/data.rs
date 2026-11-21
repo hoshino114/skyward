@@ -94,9 +94,18 @@ fn open(service: &KeyMint) -> Result<Opened> {
 /// Map the data partition decrypted, under the key the phone keeps for it,
 /// and give its table's entries, the first the one the key is found by,
 /// and the device the filesystem is read and written through.
+///
+/// A phone whose table names no encryption for the partition has none to
+/// undo: its systems leave the partition as it is, as the ones built for
+/// other phones than this one do, so its files are read through the
+/// partition itself and there is no key to unwrap.
 fn map(service: &KeyMint) -> Result<(Vec<Entry>, PathBuf)> {
     let entries = skyward_block::fstab::read(MOUNT)?;
     let entry = entries.first().with_context(|| format!("the phone's own table says nothing about {MOUNT}"))?;
+    if entry.extra("metadata_encryption").is_none() {
+        let device = PathBuf::from(skyward_block::fstab::device(entry)?);
+        return Ok((entries, device));
+    }
     let encryption = Encryption::of(entry)?;
     let device = skyward_block::fstab::device(entry)?;
     let key = storage_key(service, entry, &encryption)?;
@@ -113,8 +122,12 @@ pub fn map_unmounted(service: &KeyMint) -> Result<PathBuf> {
     map(service).map(|(_, mapped)| mapped)
 }
 
-/// Take away the mapping [`map_unmounted`] made.
+/// Take away the mapping [`map_unmounted`] made. A phone whose partition is
+/// not encrypted has no mapping to take away.
 pub fn unmap() -> Result<()> {
+    if dm::status(MAPPED)?.is_none() {
+        return Ok(());
+    }
     dm::remove(MAPPED)
 }
 
@@ -172,6 +185,13 @@ pub fn open_without_credential(service: &KeyMint) -> Result<Opening> {
         true => None,
         false => Some(open(service)?),
     };
+    // A phone that encrypts nothing of the partition keeps no keys for its
+    // files: everything in it reads as it is, so nothing stays closed, and
+    // the owner's shared storage is shown as it is once the partition is up.
+    if plain()? {
+        show_owner_storage()?;
+        return Ok(Opening { mounted, closed: Vec::new() });
+    }
     open_shared(service)?;
     let mut closed = Vec::new();
     let mut owner = Note::default();
@@ -255,6 +275,13 @@ fn open_shared(service: &KeyMint) -> Result<[u8; crate::fscrypt::NAME_BYTES]> {
         anyhow::bail!("the key in {SHARED_KEY} is not the one {SHARED_NAME} names");
     }
     Ok(name)
+}
+
+/// Whether the phone's table names no encryption for the data partition,
+/// as a phone running a system that leaves it unencrypted does.
+fn plain() -> Result<bool> {
+    let entries = skyward_block::fstab::read(MOUNT)?;
+    Ok(entries.first().is_none_or(|entry| entry.extra("metadata_encryption").is_none()))
 }
 
 /// Which users the phone keeps keys for, in order.
