@@ -40,6 +40,16 @@ load = ["xiaomi_touch", "goodix_core", "focaltech_touch"]
 [firmware]
 partition = "modem"
 
+# The vibration motor, Silicon Mitus' SIH688x on the second i2c bus, whose
+# force-feedback device is what clicks and the screen's ticks are played
+# through. Its resonant frequency is what it measured itself as it started:
+# 1723 in the file, a tenth of a hertz each, as the file's label says
+# nothing of. Past three quarters of the slider the motor rattles, as on
+# the phones that share this driver.
+[haptics]
+resonance = "/sys/bus/i2c/devices/2-006b/f0_value"
+strength = { lightest = 0.25, strongest = 0.75 }
+
 # The persist partition, which the phone mounts at /mnt/vendor/persist and
 # its own recovery leaves unmounted. The secure world keeps its own files
 # there, through a listener qseecomd registers: among them what the key

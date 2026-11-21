@@ -17,9 +17,18 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// A program that ends sooner than this after starting waits this long
-/// before it is started again.
+/// A program that ends sooner than this after starting waits before it is
+/// started again: as long as this at first, doubling each time it ends as
+/// it started, up to [`RESTART_MOST`], and this long again once one runs
+/// for [`STARTED`]. A program the recovery cannot satisfy the libraries of
+/// ends at once every time, and it is not started a thousand times a
+/// minute for it.
 const RESTART_DELAY: Duration = Duration::from_secs(1);
+const RESTART_MOST: Duration = Duration::from_secs(300);
+
+/// A program that ran this long after starting is taken as started: the
+/// wait before the next start begins again.
+const STARTED: Duration = Duration::from_secs(30);
 
 /// How long a program gets to become what it says it will be.
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -100,6 +109,13 @@ fn accounts() -> HashMap<String, u32> {
     ueventd::accounts(&ueventd::PASSWD_FILES.iter().chain(&ueventd::GROUP_FILES).copied().collect::<Vec<_>>())
 }
 
+/// The folders the phone's own programs find their libraries in, after the
+/// ones a program names itself and the bundle of the vendor interface's
+/// libraries: a program built for the phone's system reads in them what
+/// that system's own loader would find, such as the libraries a vendor
+/// partition keeps beside its hardware services, in its `hw` folder.
+const PHONE_LIBRARIES: [&str; 3] = ["/vendor/lib64/hw", "/vendor/lib64", "/system/lib64"];
+
 /// What `program` is started with, worked out before it is: the program
 /// itself, which has to be there, with `libraries` after its own, who it
 /// runs as and what init hands it.
@@ -111,6 +127,7 @@ fn readied(program: &Started, libraries: Option<&Path>, known: &HashMap<String, 
     if let Some(dir) = libraries {
         s.libraries.push(dir.to_string_lossy().into_owned());
     }
+    s.libraries.extend(PHONE_LIBRARIES.iter().filter(|dir| Path::new(dir).is_dir()).map(|dir| (*dir).to_string()));
     let who = Credentials::of(&s, known)?;
     let given = Given::of(program, known)?;
     Ok((s, who, given))
@@ -355,6 +372,7 @@ fn ready(s: &Service) -> Result<()> {
 }
 
 fn supervise(s: &Service, who: &Credentials, given: &Given) -> ! {
+    let mut wait = RESTART_DELAY;
     loop {
         let started = Instant::now();
         let ended = match running(&s.path) {
@@ -366,9 +384,13 @@ fn supervise(s: &Service, who: &Credentials, given: &Given) -> ! {
             Err(e) => format!("{}: {e:#}", s.path),
         };
         let _ = skyward_sys::kmsg(&line);
-        if started.elapsed() < RESTART_DELAY {
-            thread::sleep(RESTART_DELAY);
-        }
+        wait = match started.elapsed() {
+            ran if ran < STARTED => {
+                thread::sleep(wait);
+                (wait * 2).min(RESTART_MOST)
+            }
+            _ => RESTART_DELAY,
+        };
     }
 }
 
