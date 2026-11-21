@@ -517,14 +517,6 @@ impl Station {
     fn joining(&mut self, told: &Told) {
         let Some(j) = &mut self.state.joined else { return };
         let next = j.on(told);
-        // Joined, so the password is the one the network takes: it is
-        // written down to be joined again without asking.
-        if matches!(j.stage, Stage::Connected(_) | Stage::NoAddress(_))
-            && let Some(s) = self.pending.take()
-            && let Err(e) = remember(&s)
-        {
-            let _ = skyward_sys::kmsg(&format!("the network joined is not kept: {e:#}"));
-        }
         match next {
             Next::Show => {}
             Next::Address => self.ask_address(),
@@ -569,8 +561,19 @@ impl Station {
             return;
         }
         r.asking = None;
+        let kept = self.pending.take();
         let lease = match answer {
-            Ok(Asked::Got(lease)) | Ok(Asked::Kept(Kept::Kept(lease))) => lease,
+            Ok(Asked::Got(lease)) | Ok(Asked::Kept(Kept::Kept(lease))) => {
+                // The network gave an address, so the password it was joined
+                // with is the one that works: it is written down to be joined
+                // again without asking.
+                if let Some(s) = kept {
+                    if let Err(e) = remember(&s) {
+                        let _ = skyward_sys::kmsg(&format!("the network joined is not kept: {e:#}"));
+                    }
+                }
+                lease
+            }
             Ok(Asked::Kept(Kept::Unanswered)) => {
                 if let Some(h) = &mut r.lease {
                     h.phase += 1;

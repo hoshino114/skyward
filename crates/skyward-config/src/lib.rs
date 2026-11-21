@@ -227,6 +227,12 @@ pub struct Haptics {
     /// tenths of a hertz whatever its label.
     pub resonance: String,
     pub strength: Strength,
+    /// Whether the motor is played with the kernel's own sine at its
+    /// resonant frequency rather than with samples made for it: for a
+    /// driver that buzzes with the samples of the phones Skyward was
+    /// written on.
+    #[serde(default)]
+    pub sine: bool,
 }
 
 /// How strongly the click plays, each as a share of the most its waveform

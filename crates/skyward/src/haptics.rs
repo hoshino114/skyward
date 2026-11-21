@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 const EV_FF: u16 = 0x15;
 const FF_PERIODIC: u16 = 0x51;
 const FF_CUSTOM: u16 = 0x5d;
+const FF_SINE: u16 = 0x5a;
 
 /// The ticks play at this share of the drive the driver gives samples at in
 /// full, whatever the slider says: the 17 Ultra's own system plays them at
@@ -48,6 +49,10 @@ enum Click {
     /// Samples made at the motor's resonant frequency, which the driver
     /// plays as they are, at `rate` a second.
     Samples { data: Vec<i8>, rate: u32 },
+    /// The kernel's own sine at the motor's frequency, `period_ms` to a
+    /// swing, played for `length_ms`: for a driver that takes the samples
+    /// of the phones Skyward was written on badly, and buzzes with them.
+    Sine { period_ms: u16, length_ms: u16 },
 }
 
 impl Haptics {
@@ -57,17 +62,25 @@ impl Haptics {
     pub fn open(cfg: &skyward_config::Haptics) -> Result<Haptics> {
         let (path, dev) = motor()?;
         let hz = resonance(&cfg.resonance)?;
-        let click = match cfg.click {
-            Some(id) => {
+        let click = match (cfg.sine, cfg.click) {
+            (true, _) => {
+                let period_ms = (1000.0 / hz).round().clamp(2.0, 20.0) as u16;
+                eprintln!("haptics {}: the kernel's sine at {hz} Hz, {period_ms} ms a swing", path.display());
+                Click::Sine { period_ms, length_ms: 22 }
+            }
+            (false, Some(id)) => {
                 eprintln!("haptics {}: clicks with waveform {id}, ticks made for a motor swinging at {hz} Hz", path.display());
                 Click::Kept(id)
             }
-            None => {
+            (false, None) => {
                 eprintln!("haptics {}: clicks and ticks made for a motor swinging at {hz} Hz", path.display());
                 Click::Samples { data: made(hz), rate: RATE }
             }
         };
-        let ticks = Click::Samples { data: ticks(hz), rate: TICKS_RATE };
+        let ticks = match click {
+            Click::Sine { period_ms, .. } => Click::Sine { period_ms, length_ms: 14 },
+            _ => Click::Samples { data: ticks(hz), rate: TICKS_RATE },
+        };
         Ok(Haptics { dev, click, ticks, strength: cfg.strength, playing: Arc::new(Mutex::new(None)), clicks: 0 })
     }
 
@@ -188,6 +201,7 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
     let mut kept: [i16; 3] = [0; 3];
     let mut samples = Samples { index: 0, length: 0, rate: RATE, data: std::ptr::null() };
     let (len, data) = match click {
+        Click::Sine { .. } => (0usize, std::ptr::null_mut()),
         Click::Kept(id) => {
             kept[0] = *id;
             (std::mem::size_of_val(&kept), kept.as_mut_ptr())
@@ -199,9 +213,13 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
             (std::mem::size_of::<Samples>(), (&mut samples as *mut Samples).cast::<i16>())
         }
     };
+    let (waveform, period) = match click {
+        Click::Sine { period_ms, .. } => (FF_SINE, *period_ms),
+        _ => (FF_CUSTOM, 0),
+    };
     let periodic = libc::ff_periodic_effect {
-        waveform: FF_CUSTOM,
-        period: 0,
+        waveform,
+        period,
         magnitude: (share.clamp(0.0, 1.0) * f32::from(i16::MAX)).round() as i16,
         offset: 0,
         phase: 0,
@@ -209,12 +227,16 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
         custom_len: len as u32,
         custom_data: data,
     };
+    let length = match click {
+        Click::Sine { length_ms, .. } => u16::from(*length_ms),
+        _ => 0,
+    };
     let mut effect = libc::ff_effect {
         type_: FF_PERIODIC,
         id: -1,
         direction: 0,
         trigger: libc::ff_trigger { button: 0, interval: 0 },
-        replay: libc::ff_replay { length: 0, delay: 0 },
+        replay: libc::ff_replay { length, delay: 0 },
         u: [0; 4],
     };
     // The union holds the periodic effect; it is exactly as large.
@@ -235,6 +257,7 @@ fn upload(dev: &File, click: &Click, share: f32) -> Result<Loaded> {
         }
         // The queue is full before the samples start playing.
         Click::Samples { data, rate } => Duration::from_secs_f64(data.len() as f64 / f64::from(*rate)),
+        Click::Sine { length_ms, .. } => Duration::from_millis(u64::from(*length_ms)),
     };
     Ok(Loaded { slot: effect.id, length })
 }

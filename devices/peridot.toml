@@ -49,6 +49,10 @@ partition = "modem"
 [haptics]
 resonance = "/sys/bus/i2c/devices/2-006b/f0_value"
 strength = { lightest = 0.6, strongest = 1.0 }
+# The samples made for the phones Skyward was written on buzz rather than
+# click on this driver, so the kernel's own sine at the motor's frequency is
+# played instead: 6 ms a swing at 172 Hz, for 22 ms.
+sine = true
 
 # The persist partition, which the phone mounts at /mnt/vendor/persist and
 # its own recovery leaves unmounted. The secure world keeps its own files
