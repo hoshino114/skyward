@@ -48,11 +48,16 @@ partition = "modem"
 # the phones that share this driver.
 [haptics]
 resonance = "/sys/bus/i2c/devices/2-006b/f0_value"
-strength = { lightest = 0.6, strongest = 1.0 }
-# The samples made for the phones Skyward was written on buzz rather than
-# click on this driver, so the kernel's own sine at the motor's frequency is
-# played instead: 6 ms a swing at 172 Hz, for 22 ms.
-sine = true
+# The samples the driver plays come out as a short buzz rather than a click:
+# its own waveform path wants a waveform loaded into its RAM, and the write
+# that loads one hangs on this unit, taking the display down with it. Kept
+# quiet enough to be a hint rather than a rattle, and the pages' own switch
+# turns it off.
+strength = { lightest = 0.35, strongest = 0.7 }
+# The kernel's sine is not played here: this driver's periodic effect takes
+# the display down with it, so the samples are played as on the phones
+# Skyward was written on, quieter and shorter than they play there.
+sine = false
 
 # The persist partition, which the phone mounts at /mnt/vendor/persist and
 # its own recovery leaves unmounted. The secure world keeps its own files
