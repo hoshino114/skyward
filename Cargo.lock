@@ -2564,6 +2564,7 @@ dependencies = [
  "httparse",
  "libc",
  "md-5",
+ "roxmltree",
  "semver",
  "serde",
  "serde_json",

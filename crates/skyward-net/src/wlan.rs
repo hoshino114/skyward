@@ -211,6 +211,141 @@ impl Joined {
     }
 }
 
+/// The networks an installed Android system keeps in `text`, as its
+/// `WifiConfigStore.xml` writes them: each with the password it is joined
+/// with, where it keeps one the recovery can join with.
+///
+/// A name the system writes in hex rather than quoted is left out, as is a
+/// network whose password is kept as a 64-digit key rather than as the
+/// password itself, and one that is joined with a login of its own.
+pub fn system_saved(text: &str) -> Vec<Saved> {
+    let Ok(doc) = roxmltree::Document::parse(text) else { return Vec::new() };
+    let mut out = Vec::new();
+    for network in doc.descendants().filter(|n| n.has_tag_name("Network")) {
+        let Some(config) = network.descendants().find(|n| n.has_tag_name("WifiConfiguration")) else { continue };
+        let field = |name: &str| -> String {
+            config
+                .descendants()
+                .find(|n| n.has_tag_name("string") && n.attribute("name") == Some(name))
+                .and_then(|n| n.text())
+                .map(unquoted)
+                .unwrap_or_default()
+        };
+        let number = |name: &str| -> Option<i64> {
+            config
+                .descendants()
+                .find(|n| n.has_tag_name("int") && n.attribute("name") == Some(name))
+                .and_then(|n| n.attribute("value"))
+                .and_then(|v| v.parse().ok())
+        };
+        let flag = |name: &str| -> bool {
+            config
+                .descendants()
+                .find(|n| n.has_tag_name("boolean") && n.attribute("name") == Some(name))
+                .and_then(|n| n.attribute("value"))
+                .is_some_and(|v| v == "true")
+        };
+        let Some(ssid) = config
+            .descendants()
+            .find(|n| n.has_tag_name("string") && n.attribute("name") == Some("SSID"))
+            .and_then(|n| n.text())
+            .and_then(quoted)
+        else {
+            continue;
+        };
+        let password = field("PreSharedKey");
+        let security = match number("SecurityType") {
+            Some(0) => Security::Open,
+            Some(5) => Security::Owe,
+            Some(2) => Security::Psk,
+            Some(4) => Security::Sae,
+            _ => continue,
+        };
+        let joinable = match security {
+            Security::Open | Security::Owe => password.is_empty(),
+            Security::Psk => (8..=63).contains(&password.len()) && password.bytes().all(|b| (32..=126).contains(&b)),
+            Security::Sae => !password.is_empty(),
+            _ => false,
+        };
+        if !joinable {
+            continue;
+        }
+        let name = String::from_utf8(ssid.clone()).unwrap_or_default();
+        out.push(Saved { ssid, name, security, password, hidden: flag("HiddenSSID") });
+    }
+    out
+}
+
+/// What the system wrote between the quotes it puts around a name or a
+/// password, where it wrote it quoted.
+fn quoted(text: &str) -> Option<Vec<u8>> {
+    let inner = text.strip_prefix('"')?.strip_suffix('"')?;
+    Some(inner.as_bytes().to_vec())
+}
+
+/// The text the system quoted, or as it stands where it quoted none.
+fn unquoted(text: &str) -> String {
+    text.strip_prefix('"').and_then(|t| t.strip_suffix('"')).unwrap_or(text).to_string()
+}
+
+/// A network joined, as it is written down to be joined again without
+/// asking for its password.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Saved {
+    pub ssid: Vec<u8>,
+    pub name: String,
+    pub security: Security,
+    pub password: String,
+    pub hidden: bool,
+}
+
+impl Saved {
+    /// The line that keeps it: the name's bytes and the password's as hex,
+    /// which takes any of them, then how the network is protected and
+    /// whether it hides its name.
+    pub fn line(&self) -> String {
+        format!("{}\t{}\t{}\t{}\n", hex::encode(&self.ssid), security_name(self.security), hex::encode(&self.password), u8::from(self.hidden))
+    }
+
+    /// Read back what [`line`](Saved::line) wrote, where it is all there.
+    pub fn of(line: &str) -> Option<Saved> {
+        let mut parts = line.trim_end().split('\t');
+        let ssid = hex::decode(parts.next()?).ok()?;
+        let security = security_named(parts.next()?)?;
+        let password = String::from_utf8(hex::decode(parts.next()?).ok()?).ok()?;
+        let hidden = matches!(parts.next(), Some("1"));
+        let name = String::from_utf8(ssid.clone()).unwrap_or_default();
+        Some(Saved { ssid, name, security, password, hidden })
+    }
+}
+
+/// How a network is protected, as a kept network writes it.
+pub fn security_name(security: Security) -> &'static str {
+    match security {
+        Security::Open => "open",
+        Security::Owe => "owe",
+        Security::Psk => "psk",
+        Security::Sae => "sae",
+        Security::PskSae => "psk-sae",
+        Security::Wep => "wep",
+        Security::Enterprise => "enterprise",
+    }
+}
+
+/// What [`security_name`] wrote, read back.
+pub fn security_named(name: &str) -> Option<Security> {
+    Some(match name {
+        "open" => Security::Open,
+        "owe" => Security::Owe,
+        "psk" => Security::Psk,
+        "sae" => Security::Sae,
+        "psk-sae" => Security::PskSae,
+        "wep" => Security::Wep,
+        "enterprise" => Security::Enterprise,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,4 +437,72 @@ mod tests {
         assert_eq!(link.mac, "02:00:00:00:00:04");
         assert_eq!(link.router, Some(Ipv4Addr::new(192, 168, 1, 1)));
     }
+    #[test]
+    fn a_network_kept_reads_back_as_it_was_written() {
+        let s = Saved {
+            ssid: "Skyward 客厅".as_bytes().to_vec(),
+            name: "Skyward 客厅".into(),
+            security: Security::PskSae,
+            password: "pass\"word 密码".into(),
+            hidden: true,
+        };
+        assert_eq!(Saved::of(&s.line()), Some(s), "any byte of a name or a password");
+    }
+
+    #[test]
+    fn a_line_that_is_not_all_there_is_no_network() {
+        for line in ["", "abc", "7573\tpsk", "zz\tpsk\t74657374", "7573\tnone\t74657374", "7573\tpsk\tzz"] {
+            assert_eq!(Saved::of(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn the_networks_a_system_keeps_are_read_with_their_passwords() {
+        let text = r#"<WifiConfigStoreData>
+            <NetworkList>
+                <Network>
+                    <WifiConfiguration>
+                        <string name="SSID">&quot;Skyward 客厅&quot;</string>
+                        <string name="PreSharedKey">&quot;pass word&quot;</string>
+                        <boolean name="HiddenSSID" value="false" />
+                        <SecurityParamsList><SecurityParams><int name="SecurityType" value="2" /></SecurityParams></SecurityParamsList>
+                    </WifiConfiguration>
+                </Network>
+                <Network>
+                    <WifiConfiguration>
+                        <string name="SSID">&quot;Open one&quot;</string>
+                        <null name="PreSharedKey" />
+                        <SecurityParamsList><SecurityParams><int name="SecurityType" value="0" /></SecurityParams></SecurityParamsList>
+                    </WifiConfiguration>
+                </Network>
+                <Network>
+                    <WifiConfiguration>
+                        <string name="SSID">&quot;Kept as a key&quot;</string>
+                        <string name="PreSharedKey">&quot;00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff&quot;</string>
+                        <SecurityParamsList><SecurityParams><int name="SecurityType" value="2" /></SecurityParams></SecurityParamsList>
+                    </WifiConfiguration>
+                </Network>
+                <Network>
+                    <WifiConfiguration>
+                        <string name="SSID">0x00ab</string>
+                        <string name="PreSharedKey">&quot;a password&quot;</string>
+                        <SecurityParamsList><SecurityParams><int name="SecurityType" value="2" /></SecurityParams></SecurityParamsList>
+                    </WifiConfiguration>
+                </Network>
+                <Network>
+                    <WifiConfiguration>
+                        <string name="SSID">&quot;A login of its own&quot;</string>
+                        <SecurityParamsList><SecurityParams><int name="SecurityType" value="3" /></SecurityParams></SecurityParamsList>
+                    </WifiConfiguration>
+                </Network>
+            </NetworkList>
+        </WifiConfigStoreData>"#;
+        let kept = system_saved(text);
+        assert_eq!(kept.len(), 2, "the two that can be joined with what the system keeps");
+        assert_eq!(kept[0].name, "Skyward 客厅");
+        assert_eq!((kept[0].security, kept[0].password.as_str()), (Security::Psk, "pass word"));
+        assert_eq!((kept[1].name.as_str(), kept[1].security), ("Open one", Security::Open), "one that needs no password");
+        assert!(system_saved("not a document").is_empty(), "a file that is not the store has none");
+    }
+
 }

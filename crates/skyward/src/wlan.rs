@@ -10,7 +10,7 @@ use skyward_net::http::Servers;
 use skyward_net::iface;
 use skyward_net::reach::{self, Reach};
 use skyward_net::supplicant::{self, Bss, Control, Event as Told, Security};
-use skyward_net::wlan::{self, Joined, Link, Next, Power, Stage, Traffic, Wlan};
+use skyward_net::wlan::{self, Joined, Link, Next, Power, Saved, Stage, Traffic, Wlan};
 use skyward_sys::worker::{self, Teller};
 use std::fs;
 use std::net::Ipv4Addr;
@@ -33,6 +33,18 @@ const PARTITIONS: &str = "/skyward/wlan";
 /// The supplicant's settings, and the folder of its control socket, in the
 /// recovery service's own folder.
 const HOME: &str = "/skyward/run/supplicant";
+
+/// Where the network joined last is written down, with its password, so
+/// that a later start of the recovery joins it again without asking: a
+/// folder on the persist partition, which the phone keeps across its
+/// systems and their updates.
+const SAVED: &str = "/mnt/vendor/persist/skyward";
+const SAVED_FILE: &str = "wifi";
+
+/// Where the installed system keeps the networks it has joined, with the
+/// password each is joined with: its own file, written by the system's
+/// Wi-Fi stack, kept in the data partition.
+const SYSTEM_NETWORKS: &str = "/data/misc/apexdata/com.android.wifi/WifiConfigStore.xml";
 
 /// The user the supplicant takes on as it starts, who has to be able to
 /// make its socket.
@@ -106,7 +118,7 @@ impl Worker {
         let (inbox, asked) = worker::telling().context("make the WLAN thread's inbox")?;
         let back = inbox.clone();
         let worker = worker::Worker::start("wlan", move |tell| {
-            let mut s = Station { cfg, modules, libraries, servers, state: Wlan::default(), running: None, back, tell };
+            let mut s = Station { cfg, modules, libraries, servers, state: Wlan::default(), running: None, pending: None, tried: Vec::new(), back, tell };
             s.run(&asked);
         })?;
         Ok(Worker { inbox, worker })
@@ -193,6 +205,39 @@ impl Held {
     }
 }
 
+/// The network written down, if one is.
+fn saved() -> Vec<Saved> {
+    let path = Path::new(SAVED).join(SAVED_FILE);
+    match fs::read_to_string(&path) {
+        Ok(text) => text.lines().filter_map(Saved::of).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The networks the installed system keeps, as it wrote them down. None
+/// are read where the data partition is closed, or where the system keeps
+/// its file elsewhere.
+fn system_networks() -> Vec<Saved> {
+    match fs::read_to_string(SYSTEM_NETWORKS) {
+        Ok(text) => wlan::system_saved(&text),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Write the network `s` down as the one to join again, in place of what
+/// was written down before, which only one is.
+fn remember(s: &Saved) -> Result<()> {
+    let dir = Path::new(SAVED);
+    fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+    let path = dir.join(SAVED_FILE);
+    let work = dir.join(".wifi.tmp");
+    fs::write(&work, s.line()).with_context(|| format!("write {}", work.display()))?;
+    fs::set_permissions(&work, fs::Permissions::from_mode(0o600)).with_context(|| format!("keep {} to the recovery", work.display()))?;
+    fs::rename(&work, &path).with_context(|| format!("move {} to {}", work.display(), path.display()))?;
+    skyward_sys::kmsg(&format!("{} is kept to be joined again", s.name))?;
+    Ok(())
+}
+
 struct Station {
     cfg: Config,
     modules: Vec<PathBuf>,
@@ -200,6 +245,12 @@ struct Station {
     servers: Servers,
     state: Wlan,
     running: Option<Running>,
+    /// The network being joined, kept to write down once it is joined, so
+    /// that a password that was refused is not written down.
+    pending: Option<Saved>,
+    /// The networks the installed system keeps that were tried this run,
+    /// which are not tried again when their password is refused.
+    tried: Vec<Vec<u8>>,
     /// What a thread asking for an address, or looking how far the
     /// network reaches, answers to: the thread's own inbox.
     back: Teller<Inbox>,
@@ -260,9 +311,22 @@ impl Station {
             Command::Join { ssid, name, security, password } => {
                 self.unaddress();
                 let mut joined = Joined { ssid, name, security, stage: Stage::Joining };
-                if let Err(e) = self.join(&joined, &password) {
-                    let _ = skyward_sys::kmsg(&format!("joining {} failed: {e:#}", joined.name));
-                    joined.stage = Stage::Failed;
+                match self.join(&joined, &password) {
+                    Ok(_) => {
+                        // Written down once the supplicant has joined it, so
+                        // that a password it refuses is not kept.
+                        self.pending = Some(Saved {
+                            ssid: joined.ssid.clone(),
+                            name: joined.name.clone(),
+                            security,
+                            password,
+                            hidden: !self.found_saw(&joined.ssid),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = skyward_sys::kmsg(&format!("joining {} failed: {e:#}", joined.name));
+                        joined.stage = Stage::Failed;
+                    }
                 }
                 self.state.joined = Some(joined);
             }
@@ -289,6 +353,7 @@ impl Station {
                 self.running = Some(r);
                 self.state.power = Power::On;
                 self.command(Command::Scan);
+                self.resume();
             }
             Err(e) => {
                 let _ = skyward_sys::kmsg(&format!("the WLAN did not come up: {e:#}"));
@@ -363,6 +428,36 @@ impl Station {
         r.control.order(&format!("SELECT_NETWORK {id}"))
     }
 
+    /// Whether the last scan saw a network of `ssid`, which one it does not
+    /// see may hide its name.
+    fn found_saw(&self, ssid: &[u8]) -> bool {
+        self.running.as_ref().is_some_and(|r| r.found.iter().any(|b| b.ssid == ssid))
+    }
+
+    /// Join the network joined last, if one was written down: the phone
+    /// does the same by itself, and so does this, its own way.
+    fn resume(&mut self) {
+        if self.state.joined.is_some() {
+            return;
+        }
+        let Some(s) = saved().into_iter().next() else { return };
+        let _ = skyward_sys::kmsg(&format!("joining {} again, as it was kept", s.name));
+        self.command(Command::Join { ssid: s.ssid, name: s.name, security: s.security, password: s.password });
+    }
+
+    /// Join the network the installed system keeps that the last scan saw,
+    /// with the password the system keeps it with: the recovery asks for no
+    /// password of its own where the phone already knows it.
+    fn resume_from_system(&mut self, seen: &[Vec<u8>]) {
+        if self.state.joined.is_some() {
+            return;
+        }
+        let Some(s) = system_networks().into_iter().find(|s| seen.contains(&s.ssid) && !self.tried.contains(&s.ssid)) else { return };
+        self.tried.push(s.ssid.clone());
+        let _ = skyward_sys::kmsg(&format!("joining {}, as the installed system keeps it", s.name));
+        self.command(Command::Join { ssid: s.ssid, name: s.name, security: s.security, password: s.password });
+    }
+
     /// Read what the supplicant has told.
     fn listen(&mut self) {
         let Some(r) = &self.running else { return };
@@ -396,13 +491,24 @@ impl Station {
             found.extend(page);
         }
         self.state.networks = wlan::networks(&found);
+        let seen: Vec<Vec<u8>> = found.iter().map(|b| b.ssid.clone()).collect();
         r.found = found;
+        self.resume_from_system(&seen);
         Ok(())
     }
 
     fn joining(&mut self, told: &Told) {
         let Some(j) = &mut self.state.joined else { return };
-        match j.on(told) {
+        let next = j.on(told);
+        // Joined, so the password is the one the network takes: it is
+        // written down to be joined again without asking.
+        if matches!(j.stage, Stage::Connected(_) | Stage::NoAddress(_))
+            && let Some(s) = self.pending.take()
+            && let Err(e) = remember(&s)
+        {
+            let _ = skyward_sys::kmsg(&format!("the network joined is not kept: {e:#}"));
+        }
+        match next {
             Next::Show => {}
             Next::Address => self.ask_address(),
             Next::Unaddress => self.unaddress(),
