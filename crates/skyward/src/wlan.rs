@@ -259,6 +259,11 @@ struct Station {
 
 impl Station {
     fn run(&mut self, asked: &worker::Told<Inbox>) {
+        // A phone whose configuration says so has its WLAN come up as the
+        // recovery does, without the page being opened first.
+        if self.cfg.auto {
+            self.command(Command::On);
+        }
         let mut told = self.state.clone();
         loop {
             let mut fds = vec![libc::pollfd { fd: asked.fd(), events: libc::POLLIN, revents: 0 }];
@@ -449,7 +454,7 @@ impl Station {
     /// with the password the system keeps it with: the recovery asks for no
     /// password of its own where the phone already knows it.
     fn resume_from_system(&mut self, seen: &[Vec<u8>]) {
-        if self.state.joined.is_some() {
+        if !self.cfg.system || self.state.joined.is_some() {
             return;
         }
         let Some(s) = system_networks().into_iter().find(|s| seen.contains(&s.ssid) && !self.tried.contains(&s.ssid)) else { return };

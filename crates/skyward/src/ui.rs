@@ -1255,7 +1255,16 @@ impl<'a> Pages<'a> {
         let inputs = Inputs::open(w, h, cfg.touch.writes.clone())?;
         let started = Instant::now();
         let control = Control::open()?;
-        let haptics = cfg.haptics.as_ref().map(Haptics::open).transpose()?;
+        // A motor the recovery cannot find, or cannot open, leaves the pages
+        // without clicks rather than without pages: on a phone whose
+        // force-feedback device is missing, the recovery still starts.
+        let haptics = match cfg.haptics.as_ref().map(Haptics::open).transpose() {
+            Ok(haptics) => haptics,
+            Err(e) => {
+                skyward_sys::kmsg(&format!("the motor is not played: {e:#}"))?;
+                None
+            }
+        };
         let backlight = Backlight::open()?;
         let first = match &request.work {
             Work::Fastboot => Screen::Fastboot,

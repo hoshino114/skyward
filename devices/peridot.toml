@@ -48,7 +48,7 @@ partition = "modem"
 # the phones that share this driver.
 [haptics]
 resonance = "/sys/bus/i2c/devices/2-006b/f0_value"
-strength = { lightest = 0.25, strongest = 0.75 }
+strength = { lightest = 0.6, strongest = 1.0 }
 
 # The persist partition, which the phone mounts at /mnt/vendor/persist and
 # its own recovery leaves unmounted. The secure world keeps its own files
@@ -106,6 +106,11 @@ firmware = [
     { name = "wlan/qca_cld/qca6750/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/qca6750/WCNSS_qcom_cfg.ini" },
     { name = "wlan/qca_cld/qca6750/wlan_mac.bin", path = "/mnt/vendor/persist/wlan/wlan_mac.bin" },
 ]
+# The WLAN comes on with the recovery, and joins the network the installed
+# system keeps once its scan sees it: the phone already knows its networks,
+# so the recovery asks for no password of its own.
+auto = true
+system = true
 interface = "wlan0"
 supplicant = "/vendor/bin/hw/wpa_supplicant"
 libraries = ["/system/lib64", "/vendor/lib64"]

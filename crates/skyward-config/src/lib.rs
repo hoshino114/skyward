@@ -129,6 +129,18 @@ pub struct Wlan {
     /// The page the stock system asks over plain HTTP to tell whether a
     /// network reaches the internet, which answers 204 with nothing.
     pub probe: String,
+    /// Whether the WLAN comes on as the recovery starts, without the WLAN
+    /// page being opened first. Off by default: the supplicant needs the
+    /// vendor interface's libraries, and on a phone where those do not open,
+    /// the WLAN page is where the reason shows.
+    #[serde(default)]
+    pub auto: bool,
+    /// Whether a network the installed system keeps is joined with the
+    /// password that system keeps it with, so that a phone already knowing
+    /// its networks asks for no password in a recovery. Off by default: it
+    /// reads the system's own file, which only some phones carry.
+    #[serde(default)]
+    pub system: bool,
 }
 
 /// A value written to a file, such as a switch in sysfs.
