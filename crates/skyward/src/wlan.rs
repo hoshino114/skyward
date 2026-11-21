@@ -54,6 +54,18 @@ const WIFI: u32 = 1010;
 /// loading meanwhile.
 const INTERFACE_WAIT: Duration = Duration::from_secs(20);
 
+/// How long the interface may keep refusing to be brought up after the
+/// driver made it: the chip is still coming up, and a switch thrown at the
+/// interface then is refused as busy.
+const UP_WAIT: Duration = Duration::from_millis(5000);
+
+/// How long the chip takes to load its firmware after the driver that owns
+/// it is loaded, before its interface may be opened at all. Opened before,
+/// the driver gives up on the whole interface — `hdd_open: VDEV SYNC TRANS
+/// start fails -16` — and it stays down until the driver is loaded again,
+/// however often the switch is thrown after.
+const FIRMWARE_WAIT: Duration = Duration::from_secs(12);
+
 /// How long the supplicant may take to open its control socket.
 const SOCKET_WAIT: Duration = Duration::from_secs(10);
 
@@ -745,13 +757,31 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
         for w in &cfg.writes {
             fs::write(&w.path, &w.value).with_context(|| format!("write {} to {}", w.value, w.path))?;
         }
+        // The chip is loading its firmware: the interface it makes is not to
+        // be opened until it has, or the driver gives the interface up.
+        thread::sleep(FIRMWARE_WAIT);
         let until = Instant::now() + INTERFACE_WAIT;
         while !net.exists() {
             ensure!(Instant::now() < until, "the driver made no {} in {} seconds", cfg.interface, INTERFACE_WAIT.as_secs());
             thread::sleep(Duration::from_millis(100));
         }
     }
-    iface::set_up(&cfg.interface, true)
+    // A switch thrown at the interface before the chip is ready for it is
+    // refused as busy, and thrown again until it takes.
+    let until = Instant::now() + UP_WAIT;
+    loop {
+        match iface::set_up(&cfg.interface, true) {
+            Ok(()) => return Ok(()),
+            Err(e) if busy(&e) && Instant::now() < until => thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Whether `e` is the interface refusing the switch because the chip was
+/// not ready for it yet.
+fn busy(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.raw_os_error() == Some(libc::EBUSY)))
 }
 
 /// Put a file the driver asks for where the firmware loader looks.
